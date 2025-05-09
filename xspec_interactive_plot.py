@@ -118,207 +118,214 @@ def update_errorbar(errobj, x, y, xerr=None, yerr=None):
         pass
     
 
+class XSPECInteractivePlot:
+    def __init__(self, Dir, bkgfile, rmf, arf, model_name, param_defaults, label_list, xspec_type = 'bkg',energy_range=(0.2, 8.0)):
+        self.Dir = Dir
+        self.bkgfile = bkgfile
+        self.rmf = rmf
+        self.arf = arf
+        self.model_name = model_name
+        self.param_defaults = param_defaults
+        self.label_list = label_list
+        self.xspec_type = xspec_type
+        self.energy_range = energy_range
+        self.fig = None
+        self.ax1 = None
+        self.ax2 = None
+        self.sliders = []
+        self.component_lines = []
+        self.PiB_line = None
+        self.total_model_line = None
+        self.res_points = None
+        self.values = None
+        self.model_type = None
+        self.comp_names = None
+        self.param_names = None
+        self.m_src = None
+        self.m_bkg = None
+        self.m_fwc = None
+        self.eng_bkg = None
+        self.eng_bkg_err = None
+        self.bkg_data = None
+        self.bkg_data_err = None
+        self.res_bkg = None
+        self.res_bkg_err = None
+        self.Pib_model = None
+        self.total_model = None
+        self.C = None
+        self.dof = None
 
-def interactive_xspec_plot(Dir, bkgfile, rmf, arf, model_name, param_defaults, label_list, energy_range=(0.2, 8.0)):
-    """
-    Create an interactive plot for an XSPEC model.
+    def initialize_xspec(self):
+        Xset.chatter = 0
+        Xset.xsect = 'vern'
+        Xset.abund = 'wilm'
+        Fit.statMethod = 'cstat'
+        Xset.allowPrompting = False
+        AllModels.clear()
+        AllData.clear()
+        pwd = os.getcwd()
+        os.chdir(self.Dir)
+        sp_bkg = Spectrum(self.bkgfile)
+        sp_bkg.multiresponse[0] = self.rmf
+        sp_bkg.multiresponse[0].arf = self.arf
+        sp_bkg.multiresponse[1] = self.rmf
+        os.chdir(pwd)
+        AllData.ignore(f"**-{self.energy_range[0]},{self.energy_range[1]}-**")
+    def model_bkg(self):
+        self.m_bkg = Model(self.model_name, "bkg", 1)
+        Xset.restore(f"{self.Dir}TM8_FWC_c010_mod_customized_bkg.dat")
+        self.m_fwc = AllModels(1, "fwc")
+        for _name in self.m_fwc.componentNames:
+            if _name != "constant":
+                _comp = self.m_fwc.__getattribute__(_name)
+                for _pname in _comp.parameterNames:
+                    _par = _comp.__getattribute__(_pname)
+                    _par.frozen = True
+    
+    def model_src(self):
+        self.m_src = Model(self.model_name, "src", 1)
 
-    Parameters:
-        model_name (str): The XSPEC model name (e.g., 'apec+tbabs(apec+powerlaw)').
-        param_defaults (dict): list of default values.
-        energy_range (tuple): The energy range for the plot (default: (0.2, 8.0)).
-        spectrum_data (tuple): A tuple containing energy and flux arrays for the spectrum data (default: None).
-    """
-    Xset.chatter = 0
-    Xset.xsect = 'vern'
-    Xset.abund = 'wilm'
-    Fit.statMethod = 'cstat'
-    
-    Xset.allowPrompting = False
-    # Initialize XSPEC model
-    AllModels.clear()
-    AllData.clear()
-    pwd = os.getcwd()
-    os.chdir(Dir)
+    def extract_parameters(self):
+        names, _ = get_free_parameters(AllModels, AllData)
+        self.values = self.param_defaults
+        if len(names) != len(self.values):
+            raise ValueError(f"Number of parameters ({len(names)}) does not match number of values ({len(self.values)})")
+        self.model_type = [name.split('.')[0] for name in names]
+        self.comp_names = [name.split('.')[1] for name in names]
+        self.param_names = [name.split('.')[2] for name in names]
 
-    sp_bkg = Spectrum(bkgfile)
-    sp_bkg.multiresponse[0] = rmf
-    sp_bkg.multiresponse[0].arf = arf
-    sp_bkg.multiresponse[1] = rmf
-    os.chdir(pwd)
-    
-    AllData.ignore(f"**-{energy_range[0]},{energy_range[1]}-**")
-    
-    # Xset.chatter = 10
-    # AllData.show()
-    
-    m_bkg = Model(model_name, "bkg", 1)
-    # Load the model m_fwc
-    Xset.restore(f"{Dir}TM8_FWC_c010_mod_customized_bkg.dat")
-    m_fwc = AllModels(1, "fwc")
+    def set_values(self, set_values):
 
-    # Freeze all parameters of m_fwc except the constant
-    for _name in m_fwc.componentNames:
-        if _name != "constant":
-            _comp = m_fwc.__getattribute__(_name)
-            for _pname in _comp.parameterNames:
-                _par = _comp.__getattribute__(_pname)
-                _par.frozen = True
-    
-    # global comp_names, param_names, values
-    names, _ = get_free_parameters(AllModels, AllData)
-    values = param_defaults
-    if len(names) != len(values):
-        raise ValueError(f"Number of parameters ({len(names)}) does not match number of values ({len(values)})")
-    model_type = [name.split('.')[0] for name in names]
-    comp_names = [name.split('.')[1] for name in names]
-    param_names = [name.split('.')[2] for name in names]
-    
-    def set_values(model_type, comp_names, param_names, set_values):
-        """
-        Set the values of the parameters in the XSPEC model.
-        """
         for i in range(len(set_values)):
-            if model_type[i] == "m_bkg":
-                model_obj = m_bkg
-            elif model_type[i] == "m_fwc":
-                model_obj = m_fwc
+            if self.model_type[i] == "m_src":
+                model_obj = self.m_src
+            elif self.model_type[i] == "m_bkg":
+                model_obj = self.m_bkg
+            elif self.model_type[i] == "m_fwc":
+                model_obj = self.m_fwc
             try:
-                component = getattr(model_obj, comp_names[i])
-                setattr(component, param_names[i], set_values[i])
+                component = getattr(model_obj, self.comp_names[i])
+                setattr(component, self.param_names[i], set_values[i])
             except Exception as e:
-                print(f"Error setting parameter {model_type[i]}.{comp_names[i]}.{param_names[i]}: {e}")
+                print(f"Error setting parameter {self.model_type[i]}.{self.comp_names[i]}.{self.param_names[i]}: {e}")
 
-    set_values(model_type, comp_names, param_names, values)
-    
-    Fit.query = "yes"
-    Fit.nIterations = 1000
-    Fit.perform()
-    
-    _, values = get_free_parameters(AllModels, AllData)
-    # print(values_fit)
-    set_values(model_type, comp_names, param_names, values)
-    C = Fit.statistic
-    dof = Fit.dof
-    Plot.device = "/null"
-    Plot.add = True
-    Plot.xAxis = "keV"
-    Plot.setRebin(minSig=20, maxBins=100)
-    Plot('ldata delchi')
-    bkg_data = Plot.y(1)
-    bkg_data_err = Plot.yErr(1)
-    eng_bkg= Plot.x(1)
-    eng_bkg_err = Plot.xErr(1)
-    
-    total_model = Plot.model(1)
-        
-    res_bkg = Plot.y(1,2)
-    res_bkg_err = Plot.yErr(1,2)
-    Pib_model = np.zeros(len(Plot.model(1)))   
-    for i in range(Plot.nAddComps()-26, Plot.nAddComps()-1):
-        Pib_model += np.array(Plot.addComp(i, 1))
-    
-    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, gridspec_kw={'height_ratios': [3, 1], 'hspace': 0})
-    
-    ax1.errorbar(eng_bkg, bkg_data, xerr=eng_bkg_err, yerr=bkg_data_err, fmt='.', color="black", label="bkg data", alpha=0.5, lw=1.2)
-    
-    total_model_line, = ax1.plot(eng_bkg, total_model, label="Full model")
-    
-    component_lines = []
-    
-    for i in range(1, Plot.nAddComps() - 26):
-        line, = ax1.plot(eng_bkg, Plot.addComp(i, 1), label=label_list[i - 1], linestyle="--")
-        component_lines.append(line)
-        
-    PiB_line, =ax1.plot(eng_bkg, Pib_model, label="PIB model", linestyle="--")
-        
-    ax1.set_yscale("log")
-    ax1.set_xscale("log")
-    ax1.set_ylabel(r"$\mathrm{Counts\ s^{-1}\ keV^{-1}}$")
-    ax1.set_ylim(3, 2e2)
-    ax1.legend()
-    
-    # Plot the residuals
-    res_points = ax2.errorbar(eng_bkg, res_bkg, xerr=eng_bkg_err, yerr=res_bkg_err, fmt='.', color="black", label="residuals", alpha=0.5, lw=1.2)
-    ax2.axhline(0, color='gray', linestyle='--')
-    ax2.set_xscale("log")
-    ax2.set_xlabel("Energy [keV]")
-    ax2.set_ylabel("Residuals")
-    ax2.set_xticks([0.2, 0.5, 1, 2, 5])
-    ax2.set_xticklabels(['0.2', '0.5', '1', '2', '5'])
-    ax2.set_ylim(-5, 5)
-    ax2.set_yticks([-3, 0, 3])
-    ax2.axhspan(-3, 3, color='gray', alpha=0.15)
-    ax1.set_title(f"CSTAT/d.o.f. = {(C/dof):.2f} ({C:.2f}/{dof})")
+    def perform_fit(self):
+        self.set_values(self.values)
+        Fit.query = "yes"
+        Fit.nIterations = 1000
+        Fit.perform()
+        _, self.values = get_free_parameters(AllModels, AllData)
+        self.set_values(self.values)
+        self.C = Fit.statistic
+        self.dof = Fit.dof
 
-
-    def update_model(new_values):
-        set_values(model_type, comp_names, param_names, new_values)
-
-        C = Fit.statistic
-        dof = Fit.dof
-
+    def plot_data(self):
+        Plot.device = "/null"
+        Plot.add = True
+        Plot.xAxis = "keV"
+        Plot.setRebin(minSig=20, maxBins=100)
         Plot('ldata delchi')
-        total_model = Plot.model(1)
+        self.bkg_data = Plot.y(1)
+        self.bkg_data_err = Plot.yErr(1)
+        self.eng_bkg = Plot.x(1)
+        self.eng_bkg_err = Plot.xErr(1)
+        self.total_model = Plot.model(1)
+        self.res_bkg = Plot.y(1, 2)
+        self.res_bkg_err = Plot.yErr(1, 2)
+        if self.xspec_type == 'bkg':
+            self.Pib_model = np.zeros(len(Plot.model(1)))
+            for i in range(len(self.comp_names), Plot.nAddComps() - 1):
+                self.Pib_model += np.array(Plot.addComp(i, 1))
+
+    def create_plot(self):
+        self.fig, (self.ax1, self.ax2) = plt.subplots(2, 1, sharex=True, gridspec_kw={'height_ratios': [3, 1], 'hspace': 0})
+        self.ax1.errorbar(self.eng_bkg, self.bkg_data, xerr=self.eng_bkg_err, yerr=self.bkg_data_err, fmt='.', color="black", label="bkg data", alpha=0.5, lw=1.2)
+        self.total_model_line, = self.ax1.plot(self.eng_bkg, self.total_model, label="Full model")
+        for i in range(len(self.label_list)):
+            line, = self.ax1.plot(self.eng_bkg, Plot.addComp(i+1, 1), label=self.label_list[i], linestyle="--")
+            self.component_lines.append(line)
+        if self.xspec_type == 'bkg':
+            self.PiB_line, = self.ax1.plot(self.eng_bkg, self.Pib_model, label="PIB model", linestyle="--")
+        self.ax1.set_yscale("log")
+        self.ax1.set_xscale("log")
+        self.ax1.set_ylabel(r"$\mathrm{Counts\ s^{-1}\ keV^{-1}}$")
+        self.ax1.set_ylim(3, 2e2)
+        self.ax1.legend()
+        self.res_points = self.ax2.errorbar(self.eng_bkg, self.res_bkg, xerr=self.eng_bkg_err, yerr=self.res_bkg_err, fmt='.', color="black", label="residuals", alpha=0.5, lw=1.2)
+        self.ax2.axhline(0, color='gray', linestyle='--')
+        self.ax2.set_xscale("log")
+        self.ax2.set_xlabel("Energy [keV]")
+        self.ax2.set_ylabel("Residuals")
+        self.ax2.set_xticks([0.2, 0.5, 1, 2, 5])
+        self.ax2.set_xticklabels(['0.2', '0.5', '1', '2', '5'])
+        self.ax2.set_ylim(-5, 5)
+        self.ax2.set_yticks([-3, 0, 3])
+        self.ax2.axhspan(-3, 3, color='gray', alpha=0.15)
+        self.ax1.set_title(f"CSTAT/d.o.f. = {(self.C / self.dof):.2f} ({self.C:.2f}/{self.dof})")
+
+    def update_model(self, new_values):
+        self.set_values(new_values)
+        self.C = Fit.statistic
+        self.dof = Fit.dof
+        Plot('ldata delchi')
+        self.total_model = Plot.model(1)
+        self.res_bkg = Plot.y(1, 2)
+        self.res_bkg_err = Plot.yErr(1, 2)
+        if self.xspec_type == 'bkg':
+            self.Pib_model = np.zeros(len(Plot.model(1)))
+            for i in range(Plot.nAddComps() - 26, Plot.nAddComps() - 1):
+                self.Pib_model += np.array(Plot.addComp(i, 1))
+            self.PiB_line.set_ydata(self.Pib_model)
         
-        res_bkg = Plot.y(1,2)
-        res_bkg_err = Plot.yErr(1,2)
-        Pib_model = np.zeros(len(Plot.model(1)))   
-        for i in range(Plot.nAddComps()-26, Plot.nAddComps()-1):
-            Pib_model += np.array(Plot.addComp(i, 1))
+        self.total_model_line.set_ydata(self.total_model)
+        for i in range(len(self.label_list)):
+            self.component_lines[i].set_ydata(Plot.addComp(i + 1, 1))
+            
+        self.ax1.set_title(f"CSTAT/d.o.f. = {(self.C / self.dof):.2f} ({self.C:.2f}/{self.dof})")
+        update_errorbar(self.res_points, self.eng_bkg, self.res_bkg, xerr=self.eng_bkg_err, yerr=self.res_bkg_err)
+        self.fig.canvas.draw_idle()
 
-        total_model_line.set_ydata(total_model)
-        
-        if Plot.nAddComps()-27 == len(label_list):
-            pass
-        else:
-            print(f"Warning: The number of components in the model ({Plot.nAddComps()-27}) does not match the number of labels provided ({len(label_list)})")
-        
-        # Plot the data and models
-        for i in range(1, Plot.nAddComps()-26):
-            component_lines[i-1].set_ydata(Plot.addComp(i, 1))
-        PiB_line.set_ydata(Pib_model)
-        ax1.set_title(f"CSTAT/d.o.f. = {(C/dof):.2f} ({C:.2f}/{dof})")
+    def create_sliders(self):
+        self.sliders = [
+            FloatSlider(
+                min=val - abs(val*0.9),
+                max=val + abs(val*10),
+                value=val,
+                step=val / 10,
+                continuous_update=True,
+                description=f'{comp}.{param}',
+                readout_format='.2f'
+            )
+            for comp, param, val in zip(self.comp_names, self.param_names, self.values)
+        ]
 
-        update_errorbar(res_points, eng_bkg, res_bkg, xerr=eng_bkg_err, yerr=res_bkg_err)
-        
-        fig.canvas.draw_idle()
+    def create_interactive_layout(self):
+        def proxy_function(**kwargs):
+            ordered_values = [kwargs[k] for k in sorted(kwargs.keys())]
+            return self.update_model(ordered_values)
 
-    # Create the sliders
-    sliders = [
-        FloatSlider(
-            min=val * 0.5,
-            max=val * 2,
-            value=val,
-            step=val / 10,
-            continuous_update=True,
-            description=f'{comp}.{param}',
-            readout_format='.2f'
-        )
-        for comp, param, val in zip(comp_names, param_names, values)
-    ]
+        controls = {f'v{i}': slider for i, slider in enumerate(self.sliders)}
+        output = interactive_output(proxy_function, controls)
+        reset_button = widgets.Button(description="Reset", button_style="info")
 
-    # Proxy that extracts values from kwargs in order of slider keys
-    def proxy_function(**kwargs):
-        # Sort keys to maintain slider order (v0, v1, ...)
-        ordered_values = [kwargs[k] for k in sorted(kwargs.keys())]
-        return update_model(ordered_values)
+        def reset_parameters(_):
+            for slider, default_value in zip(self.sliders, self.values):
+                slider.value = default_value
+            self.update_model(self.values)
 
-    # Control dictionary: {'v0': slider0, 'v1': slider1, ...}
-    controls = {f'v{i}': slider for i, slider in enumerate(sliders)}
+        reset_button.on_click(reset_parameters)
+        layout = VBox([HBox([VBox(self.sliders), reset_button]), output])
+        display(layout)
 
-    # Bind to interactive output
-    output = interactive_output(proxy_function, controls)
-
-    # Add a reset button
-    reset_button = widgets.Button(description="Reset", button_style="info")
-
-    def reset_parameters(_):
-        for slider, default_value in zip(sliders, values):
-            slider.value = default_value
-        update_model(values)
-
-    reset_button.on_click(reset_parameters)
-
-    layout = VBox([HBox([VBox(sliders), reset_button]), output])
-    display(layout)
+    def run(self):
+        self.initialize_xspec()
+        if self.xspec_type == 'bkg':
+            self.model_bkg()
+        elif self.xspec_type == 'src':
+            self.model_src()
+        self.extract_parameters()
+        self.perform_fit()
+        self.plot_data()
+        self.create_plot()
+        self.create_sliders()
+        self.create_interactive_layout()
