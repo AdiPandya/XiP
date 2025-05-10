@@ -6,6 +6,8 @@ import os
 from xspec import AllData, AllModels, Spectrum, Xset, Model
 from ipywidgets import FloatSlider, VBox, HBox, interactive_output
 from IPython.display import display
+import warnings
+warnings.filterwarnings("ignore")
 
 def get_free_parameters(AllModels, AllData):
     """
@@ -17,22 +19,27 @@ def get_free_parameters(AllModels, AllData):
         AllData: XSPEC data object (e.g., AllData)
 
     Returns:
-        free_names: list of arrays of parameter names (free only)
-        free_values: list of arrays of parameter values (free only)
+        free_names: array of parameter names (free only)
+        free_values: array of parameter values (free only)
+        free_bounds: array of parameter bounds (free only)
+        logmask: boolean array indicating logarithmic priors
     """
-    free_names = []
-    free_values = []
-
+    Xset.chatter = 0
+    Xset.logChatter = 0
     Models = [AllModels.sources[k] for k in sorted(AllModels.sources.keys())]
     N_spec = AllData.nSpectra
+
+    free_name_model = np.array([], dtype=object)
+    free_name_comp = np.array([], dtype=object)
+    free_name_param = np.array([], dtype=object)
+    free_values = np.array([], dtype=float)
+    free_bounds = np.empty((0, 2), dtype=float)
 
     for n in range(1, N_spec + 1):
         for mod in Models:
             try:
                 m = AllModels(n, mod)
             except:
-                free_names.append(np.array([]))
-                free_values.append(np.array([]))
                 continue
 
             froz = np.array([m(i + 1).frozen for i in range(m.nParameters)])
@@ -40,18 +47,28 @@ def get_free_parameters(AllModels, AllData):
             is_frozen_or_linked = froz | links
 
             pars = np.array([m(i + 1).values[0] for i in range(m.nParameters)])
-            names = np.array([f"m_{mod}.{comp}.{param}" 
-                              for comp in m.componentNames 
-                              for param in getattr(m, comp).parameterNames])
-            # Filter to only free parameters
-            free_names.append(names[~is_frozen_or_linked])
-            free_values.append(pars[~is_frozen_or_linked])
 
-    # Flatten the lists
-    free_names = np.concatenate(free_names)
-    free_values = np.concatenate(free_values)
+            models = np.array([f"m_{mod}"] * m.nParameters, dtype=object)
+            comp = np.array([comp for comp in m.componentNames for _ in getattr(m, comp).parameterNames], dtype=object)
+            param = np.array([param for comp in m.componentNames for param in getattr(m, comp).parameterNames], dtype=object)
 
-    return free_names, free_values
+            free_name_model = np.concatenate((free_name_model, models[~is_frozen_or_linked]))
+            free_name_comp = np.concatenate((free_name_comp, comp[~is_frozen_or_linked]))
+            free_name_param = np.concatenate((free_name_param, param[~is_frozen_or_linked]))
+            free_values = np.concatenate((free_values, pars[~is_frozen_or_linked]))
+
+            bounds = np.zeros((m.nParameters, 2))
+            for i in range(m.nParameters):
+                if len(m(i + 1).values) > 1:
+                    bounds[i] = [m(i + 1).values[2], m(i + 1).values[4]]
+                else:
+                    bounds[i] = [m(i + 1).values[0] - 1, m(i + 1).values[0] + 1]
+            free_bounds = np.vstack((free_bounds, bounds[~is_frozen_or_linked]))
+
+    priors = np.array(['lin' if ('PhoIndex' in n or 'nH' in n or 'factor' in n) else 'log' for n in free_name_param])
+    logmask = (priors == 'log')
+
+    return free_name_model, free_name_comp, free_name_param, free_values, free_bounds, logmask
 
 def update_errorbar(errobj, x, y, xerr=None, yerr=None):
     ln, caps, bars = errobj
@@ -119,7 +136,7 @@ def update_errorbar(errobj, x, y, xerr=None, yerr=None):
     
 
 class XSPECInteractivePlot:
-    def __init__(self, Dir, bkgfile, rmf, arf, model_name, param_defaults, label_list, xspec_type = 'bkg',energy_range=(0.2, 8.0)):
+    def __init__(self, Dir, bkgfile, rmf, arf, model_name, param_defaults=None, label_list=None, xspec_type = 'bkg',energy_range=(0.2, 8.0)):
         self.Dir = Dir
         self.bkgfile = bkgfile
         self.rmf = rmf
@@ -141,9 +158,12 @@ class XSPECInteractivePlot:
         self.model_type = None
         self.comp_names = None
         self.param_names = None
+        self.bounds = None
+        self.logmask = None
         self.m_src = None
         self.m_bkg = None
         self.m_fwc = None
+        self.model_obj = None
         self.eng_bkg = None
         self.eng_bkg_err = None
         self.bkg_data = None
@@ -157,12 +177,13 @@ class XSPECInteractivePlot:
 
     def initialize_xspec(self):
         Xset.chatter = 0
+        Xset.logChatter = 0
         Xset.xsect = 'vern'
         Xset.abund = 'wilm'
         Fit.statMethod = 'cstat'
         Xset.allowPrompting = False
-        AllModels.clear()
         AllData.clear()
+        AllModels.clear()
         pwd = os.getcwd()
         os.chdir(self.Dir)
         sp_bkg = Spectrum(self.bkgfile)
@@ -171,50 +192,92 @@ class XSPECInteractivePlot:
         sp_bkg.multiresponse[1] = self.rmf
         os.chdir(pwd)
         AllData.ignore(f"**-{self.energy_range[0]},{self.energy_range[1]}-**")
-    def model_bkg(self):
-        self.m_bkg = Model(self.model_name, "bkg", 1)
-        Xset.restore(f"{self.Dir}TM8_FWC_c010_mod_customized_bkg.dat")
-        self.m_fwc = AllModels(1, "fwc")
-        for _name in self.m_fwc.componentNames:
-            if _name != "constant":
-                _comp = self.m_fwc.__getattribute__(_name)
-                for _pname in _comp.parameterNames:
-                    _par = _comp.__getattribute__(_pname)
-                    _par.frozen = True
     
-    def model_src(self):
-        self.m_src = Model(self.model_name, "src", 1)
-
+    def set_model(self):
+        Xset.chatter = 1
+        Xset.logChatter = 0
+        if self.xspec_type == 'bkg':
+            self.m_bkg = Model(self.model_name, "bkg", 1)
+            Xset.restore(f"{self.Dir}TM8_FWC_c010_mod_customized_bkg.dat")
+            self.m_fwc = AllModels(1, "fwc")
+            for _name in self.m_fwc.componentNames:
+                if _name != "constant":
+                    _comp = self.m_fwc.__getattribute__(_name)
+                    for _pname in _comp.parameterNames:
+                        _par = _comp.__getattribute__(_pname)
+                        _par.frozen = True
+        
+        elif self.xspec_type == 'src':
+            Xset.chatter = 1
+            self.m_src = Model(self.model_name, "src", 1)
+    
+    def set_param_helper(self):
+        self.initialize_xspec()
+        self.set_model()
+        self.model_type, self.comp_names, self.param_names, _, self.bounds, self.logmask = get_free_parameters(AllModels, AllData)
+        print('Following parameters are free:')
+        print('------------------------------------------------------------------------------------')
+        print(f"{'No.':<8}{'Model':<15}{'Component':<20}{'Parameter':<20}{'Bounds':<30}")
+        print('------------------------------------------------------------------------------------')
+        
+        for i, (model, comp, param, bound) in enumerate(zip(self.model_type, self.comp_names, self.param_names, self.bounds), start=1):
+            print(f"{i:<8}{model:<15}{comp:<20}{param:<20}{str(bound):<30}")
+        print('------------------------------------------------------------------------------------\n')
+        print('Labels need to be set for following components:')
+        unique_comps = np.unique(self.comp_names).tolist()
+        multiplicative_comps = ['constant', 'TBabs', 'expfac']
+        for comp in unique_comps:
+            if not any(multi_comp in comp for multi_comp in multiplicative_comps):
+                print(comp)
+        
     def extract_parameters(self):
-        names, _ = get_free_parameters(AllModels, AllData)
-        self.values = self.param_defaults
-        if len(names) != len(self.values):
-            raise ValueError(f"Number of parameters ({len(names)}) does not match number of values ({len(self.values)})")
-        self.model_type = [name.split('.')[0] for name in names]
-        self.comp_names = [name.split('.')[1] for name in names]
-        self.param_names = [name.split('.')[2] for name in names]
+        if not self.param_defaults:
+            raise ValueError("Argumnet param_defaults is required but not provided or are empty.")
+        self.model_type, self.comp_names, self.param_names, _, self.bounds, self.logmask = get_free_parameters(AllModels, AllData)
+        self.values = [param[0] if isinstance(param, tuple) else param for param in self.param_defaults]
+        # new_free_mask = [not (isinstance(param, tuple) and param[1] == -1) for param in self.param_defaults]
+        if len(self.param_names) != len(self.values):
+            raise ValueError(f"Number of parameters ({len(self.param_names)}) does not match number of values ({len(self.values)})")
+        if not self.label_list:
+            unique_comps = np.unique(self.comp_names).tolist()
+            multiplicative_comps = ['constant', 'TBabs', 'expfac']
+            non_multiplicative_comps = []
+            for comp in unique_comps:
+                if not any(multi_comp in comp for multi_comp in multiplicative_comps):
+                    non_multiplicative_comps.append(comp)
+            self.label_list = non_multiplicative_comps
 
-    def set_values(self, set_values):
-
+    def set_values(self, set_values):  
         for i in range(len(set_values)):
+            set_values[i] = self.bounds[i][0] if set_values[i] < self.bounds[i][0] else set_values[i]
+            set_values[i] = self.bounds[i][1] if set_values[i] > self.bounds[i][1] else set_values[i]
+            new_frozen_mask = [isinstance(param, tuple) and param[1] == -1 for param in self.param_defaults]
             if self.model_type[i] == "m_src":
-                model_obj = self.m_src
+                self.model_obj = self.m_src
             elif self.model_type[i] == "m_bkg":
-                model_obj = self.m_bkg
+                self.model_obj = self.m_bkg
             elif self.model_type[i] == "m_fwc":
-                model_obj = self.m_fwc
+                self.model_obj = self.m_fwc
             try:
-                component = getattr(model_obj, self.comp_names[i])
+                component = getattr(self.model_obj, self.comp_names[i])
                 setattr(component, self.param_names[i], set_values[i])
             except Exception as e:
                 print(f"Error setting parameter {self.model_type[i]}.{self.comp_names[i]}.{self.param_names[i]}: {e}")
+            if new_frozen_mask[i]:
+                component = getattr(self.model_obj, self.comp_names[i])
+                # setattr(component, self.param_names[i], set_values[i])
+                component.__getattribute__(self.param_names[i]).frozen = True
 
     def perform_fit(self):
         self.set_values(self.values)
+        # Xset.chatter = 10
+        # print(AllModels.show())
         Fit.query = "yes"
         Fit.nIterations = 1000
         Fit.perform()
-        _, self.values = get_free_parameters(AllModels, AllData)
+        # Xset.chatter = 0
+        self.model_type, self.comp_names, self.param_names, self.values, self.bounds, self.logmask= get_free_parameters(AllModels, AllData)
+        # print(self.values), print(len(self.model))
         self.set_values(self.values)
         self.C = Fit.statistic
         self.dof = Fit.dof
@@ -293,8 +356,10 @@ class XSPECInteractivePlot:
                 value=val,
                 step=val / 10,
                 continuous_update=True,
-                description=f'{comp}.{param}',
-                readout_format='.2f'
+                description=f'{comp}.{param}:',  # Add a colon for better spacing
+                style={'description_width': '150px'},  # Adjust description width for more space
+                readout_format='.2f',
+                layout=widgets.Layout(width='400px')  # Make sliders bigger
             )
             for comp, param, val in zip(self.comp_names, self.param_names, self.values)
         ]
@@ -319,10 +384,7 @@ class XSPECInteractivePlot:
 
     def run(self):
         self.initialize_xspec()
-        if self.xspec_type == 'bkg':
-            self.model_bkg()
-        elif self.xspec_type == 'src':
-            self.model_src()
+        self.set_model()
         self.extract_parameters()
         self.perform_fit()
         self.plot_data()
