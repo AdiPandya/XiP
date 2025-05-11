@@ -7,131 +7,9 @@ from xspec import AllData, AllModels, Spectrum, Xset, Model
 from ipywidgets import FloatSlider, VBox, HBox, interactive_output
 from IPython.display import display
 import warnings
+from utils import get_free_parameters, update_errorbar
+
 warnings.filterwarnings("ignore")
-
-def get_free_parameters(AllModels, AllData):
-    """
-    Extract names and values of free (unfrozen, unlinked) parameters
-    for all defined models in a multi-spectrum XSPEC analysis.
-
-    Parameters:
-        AllModels: XSPEC model object (e.g., AllModels)
-        AllData: XSPEC data object (e.g., AllData)
-
-    Returns:
-        free_names: array of parameter names (free only)
-        free_values: array of parameter values (free only)
-        free_bounds: array of parameter bounds (free only)
-        logmask: boolean array indicating logarithmic priors
-    """
-    Models = [AllModels.sources[k] for k in sorted(AllModels.sources.keys())]
-    N_spec = AllData.nSpectra
-
-    free_name_model = np.array([], dtype=object)
-    free_name_comp = np.array([], dtype=object)
-    free_name_param = np.array([], dtype=object)
-    free_values = np.array([], dtype=float)
-    free_bounds = np.empty((0, 2), dtype=float)
-
-    for n in range(1, N_spec + 1):
-        for mod in Models:
-            try:
-                m = AllModels(n, mod)
-            except:
-                continue
-
-            froz = np.array([m(i + 1).frozen for i in range(m.nParameters)])
-            links = np.array([m(i + 1).link != '' for i in range(m.nParameters)])
-            is_frozen_or_linked = froz | links
-
-            pars = np.array([m(i + 1).values[0] for i in range(m.nParameters)])
-
-            models = np.array([f"m_{mod}"] * m.nParameters, dtype=object)
-            comp = np.array([comp for comp in m.componentNames for _ in getattr(m, comp).parameterNames], dtype=object)
-            param = np.array([param for comp in m.componentNames for param in getattr(m, comp).parameterNames], dtype=object)
-
-            free_name_model = np.concatenate((free_name_model, models[~is_frozen_or_linked]))
-            free_name_comp = np.concatenate((free_name_comp, comp[~is_frozen_or_linked]))
-            free_name_param = np.concatenate((free_name_param, param[~is_frozen_or_linked]))
-            free_values = np.concatenate((free_values, pars[~is_frozen_or_linked]))
-
-            bounds = np.zeros((m.nParameters, 2))
-            for i in range(m.nParameters):
-                if len(m(i + 1).values) > 1:
-                    bounds[i] = [m(i + 1).values[2], m(i + 1).values[4]]
-                else:
-                    bounds[i] = [m(i + 1).values[0] - 1, m(i + 1).values[0] + 1]
-            free_bounds = np.vstack((free_bounds, bounds[~is_frozen_or_linked]))
-
-    priors = np.array(['lin' if ('PhoIndex' in n or 'nH' in n or 'factor' in n) else 'log' for n in free_name_param])
-    logmask = (priors == 'log')
-
-    return free_name_model, free_name_comp, free_name_param, free_values, free_bounds, logmask
-
-def update_errorbar(errobj, x, y, xerr=None, yerr=None):
-    ln, caps, bars = errobj
-    # Ensure x, y, xerr, and yerr are numpy arrays
-    if not isinstance(x, np.ndarray):
-        x = np.array(x)
-    if not isinstance(y, np.ndarray):
-        y = np.array(y)
-    if xerr is not None and not isinstance(xerr, np.ndarray):
-        xerr = np.array(xerr)
-    if yerr is not None and not isinstance(yerr, np.ndarray):
-        yerr = np.array(yerr)
-
-    if len(bars) == 2:
-        assert xerr is not None and yerr is not None, "Your errorbar object has 2 dimension of error bars defined. You must provide xerr and yerr."
-        barsx, barsy = bars  # bars always exist (?)
-        try:  # caps are optional
-            errx_top, errx_bot, erry_top, erry_bot = caps
-        except ValueError:  # in case there is no caps
-            pass
-
-    elif len(bars) == 1:
-        assert (xerr is     None and yerr is not None) or\
-               (xerr is not None and yerr is     None),  \
-               "Your errorbar object has 1 dimension of error bars defined. You must provide xerr or yerr."
-
-        if xerr is not None:
-            barsx, = bars  # bars always exist (?)
-            try:
-                errx_top, errx_bot = caps
-            except ValueError:  # in case there is no caps
-                pass
-        else:
-            barsy, = bars  # bars always exist (?)
-            try:
-                erry_top, erry_bot = caps
-            except ValueError:  # in case there is no caps
-                pass
-
-    ln.set_data(x,y)
-
-    try:
-        errx_top.set_xdata(x + xerr)
-        errx_bot.set_xdata(x - xerr)
-        errx_top.set_ydata(y)
-        errx_bot.set_ydata(y)
-    except NameError:
-        pass
-    try:
-        barsx.set_segments([np.array([[xt, y], [xb, y]]) for xt, xb, y in zip(x + xerr, x - xerr, y)])
-    except NameError:
-        pass
-
-    try:
-        erry_top.set_xdata(x)
-        erry_bot.set_xdata(x)
-        erry_top.set_ydata(y + yerr)
-        erry_bot.set_ydata(y - yerr)
-    except NameError:
-        pass
-    try:
-        barsy.set_segments([np.array([[x, yt], [x, yb]]) for x, yt, yb in zip(x, y + yerr, y - yerr)])
-    except NameError:
-        pass
-    
 
 class XSPECInteractivePlot:
     def __init__(self, data_config, model_config, xspec_type='src', energy_range=(0.2, 8.0)):
@@ -168,6 +46,7 @@ class XSPECInteractivePlot:
         self.total_bkg_line = None
         self.res_points = None
         self.values = None
+        self.perform_fit = True
         self.model_type = None
         self.comp_names = None
         self.param_names = None
@@ -191,6 +70,7 @@ class XSPECInteractivePlot:
         }
         self.residuals = None
         self.residuals_err = None
+        self.show_bkg_data = True
         self.Pib_model = None
         self.total_model = None
         self.total_src_model = None
@@ -346,13 +226,13 @@ class XSPECInteractivePlot:
                 # setattr(component, self.param_names[i], set_values[i])
                 component.__getattribute__(self.param_names[i]).frozen = True
 
-    def perform_fit(self):
+    def final_set(self):
         Xset.chatter = self.chatter
         self.set_values(self.values)
-        Fit.query = "yes"
-        Fit.nIterations = 1000
-        Fit.perform()
-        # Xset.chatter = 0
+        if self.perform_fit:
+            Fit.query = "yes"
+            Fit.nIterations = 1000
+            Fit.perform()
         self.model_type, self.comp_names, self.param_names, self.values, self.bounds, self.logmask= get_free_parameters(self.AllModels, self.AllData)
         self.set_values(self.values, frozen_mask=False)
         self.C = Fit.statistic
@@ -410,27 +290,31 @@ class XSPECInteractivePlot:
                 self.Pib_model += np.array(Plot.addComp(i, 1))
             
     def create_plot(self):
+        self.plot_data()
         self.fig, (self.ax1, self.ax2) = plt.subplots(2, 1, sharex=True, gridspec_kw={'height_ratios': [3, 1], 'hspace': 0})
         if self.xspec_type == 'src_bkg':
             self.ax1.errorbar(self.plotdata["eng_src"], self.plotdata["src_data"], xerr=self.plotdata["eng_src_err"], yerr=self.plotdata["src_data_err"], fmt='.', color="black", label="src data", alpha=0.5, lw=1.2)
-            self.ax1.errorbar(self.plotdata["eng_bkg"], self.plotdata["bkg_data"], xerr=self.plotdata["eng_bkg_err"], yerr=self.plotdata["bkg_data_err"], fmt='.', color="red", label="bkg data", alpha=0.5, lw=1.2)
-            self.total_model_line, = self.ax1.plot(self.plotdata["eng_src"], self.total_model, label="Full model")
-            self.total_bkg_line, = self.ax1.plot(self.plotdata["eng_bkg"], self.total_bkg_model, label="Bkg model")
+            if self.show_bkg_data:
+                self.ax1.errorbar(self.plotdata["eng_bkg"], self.plotdata["bkg_data"], xerr=self.plotdata["eng_bkg_err"], yerr=self.plotdata["bkg_data_err"], fmt='.', color="red", label="bkg data", alpha=0.35, lw=1.2)
+            self.total_model_line, = self.ax1.plot(self.plotdata["eng_src"], self.total_model, label="Full model", lw=1.8)
+            self.total_bkg_line, = self.ax1.plot(self.plotdata["eng_bkg"], self.total_bkg_model, label="Bkg model", lw=1.6, color="grey")
             if Plot.nAddComps(2) < Plot.nAddComps(1):
-                self.total_src_line, = self.ax1.plot(self.plotdata["eng_src"], self.total_src_model, label="Src model")
+                self.total_src_line, = self.ax1.plot(self.plotdata["eng_src"], self.total_src_model, label="Src model", lw=1.6, color="purple")
             energy_type = 'eng_src'
         elif self.xspec_type == 'src':
             self.ax1.errorbar(self.plotdata["eng_src"], self.plotdata["src_data"], xerr=self.plotdata["eng_src_err"], yerr=self.plotdata["src_data_err"], fmt='.', color="black", label="src data", alpha=0.5, lw=1.2)
-            self.total_model_line, = self.ax1.plot(self.plotdata["eng_src"], self.total_model, label="Full model")
+            self.total_model_line, = self.ax1.plot(self.plotdata["eng_src"], self.total_model, label="Full model", lw=1.8)
             energy_type = 'eng_src'
         elif self.xspec_type == 'bkg':
             self.ax1.errorbar(self.plotdata["eng_bkg"], self.plotdata["bkg_data"], xerr=self.plotdata["eng_bkg_err"], yerr=self.plotdata["bkg_data_err"], fmt='.', color="black", label="bkg data", alpha=0.5, lw=1.2)
-            self.total_model_line, = self.ax1.plot(self.plotdata["eng_bkg"], self.total_model, label="Bkg model")
+            self.total_model_line, = self.ax1.plot(self.plotdata["eng_bkg"], self.total_model, label="Bkg model", lw=1.8)
             energy_type = 'eng_bkg'
-            self.PiB_line, = self.ax1.plot(self.plotdata["eng_bkg"], self.Pib_model, label="PIB model", linestyle="--")
+            self.PiB_line, = self.ax1.plot(self.plotdata["eng_bkg"], self.Pib_model, label="PIB model", linestyle=":")
 
         if self.xspec_type == 'src_bkg' and Plot.nAddComps(2) == Plot.nAddComps(1):
             self.component_lines, = self.ax1.plot(self.plotdata[energy_type], self.total_src_model, label=self.label_list[0], linestyle="--")
+        if self.xspec_type == 'src' and Plot.nAddComps() == 0:
+            self.component_lines, = self.ax1.plot(self.plotdata[energy_type], self.total_model, label=self.label_list[0], linestyle="--", lw=1)
         else:
             for i in range(len(self.label_list)):
                 line, = self.ax1.plot(self.plotdata[energy_type], Plot.addComp(i+1, 1), label=self.label_list[i], linestyle="--")
@@ -493,8 +377,11 @@ class XSPECInteractivePlot:
     
         self.total_model_line.set_ydata(self.total_model)
         if not(self.xspec_type == 'src_bkg' and Plot.nAddComps(2) == Plot.nAddComps(1)):
-            for i in range(len(self.label_list)):
-                self.component_lines[i].set_ydata(Plot.addComp(i + 1, 1))
+            if self.xspec_type == 'src' and Plot.nAddComps() == 0:
+                self.component_lines.set_ydata(self.total_model)
+            else:
+                for i in range(len(self.label_list)):
+                    self.component_lines[i].set_ydata(Plot.addComp(i + 1, 1))
             
         self.ax1.set_title(f"CSTAT/d.o.f. = {(self.C / self.dof):.2f} ({self.C:.2f}/{self.dof})")
         update_errorbar(self.res_points, Plot.x(1, 2), self.residuals, xerr=Plot.xErr(1, 2), yerr=self.residuals_err)
@@ -503,17 +390,17 @@ class XSPECInteractivePlot:
     def create_sliders(self):
         self.sliders = [
             FloatSlider(
-                min=val - abs(val*0.9),
-                max=val + abs(val*10),
+                min=max(bounds[0], val - abs(val*3)),
+                max=min(bounds[1], val + abs(val*3)),
                 value=val,
                 step=val / 10,
                 continuous_update=True,
-                description=f'{comp}.{param}:',  # Add a colon for better spacing
+                description=f'{model}.{comp}.{param}:',  # Add a colon for better spacing
                 style={'description_width': '150px'},  # Adjust description width for more space
                 readout_format='.2e' if abs(val) < 1e-2 or abs(val) > 100 else '.2f',  # Use scientific notation for small/large numbers
                 layout=widgets.Layout(width='400px')  # Make sliders bigger
             )
-            for comp, param, val in zip(self.comp_names, self.param_names, self.values)
+            for model, comp, param, val, bounds in zip(self.model_type, self.comp_names, self.param_names, self.values, self.bounds)
         ]
 
     def create_interactive_layout(self):
@@ -536,18 +423,14 @@ class XSPECInteractivePlot:
         display(layout)
 
     def run(self):
-        # self.initialize_xspec()
         self.set_model()
         self.extract_parameters()
-        self.perform_fit()
-        self.plot_data()
+        self.final_set()
         self.create_plot()
-        # self.create_sliders()
         self.create_interactive_layout()
     
     def run_with_updated_model(self):
         self.extract_parameters()
-        self.perform_fit()
-        self.plot_data()
+        self.final_set()
         self.create_plot()
         self.create_interactive_layout()
