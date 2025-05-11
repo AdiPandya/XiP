@@ -154,6 +154,9 @@ class XSPECInteractivePlot:
         self.energy_range = energy_range
 
         # Internal attributes
+        self.AllData = None
+        self.AllModels = None
+        self.chatter = 0
         self.fig = None
         self.ax1 = None
         self.ax2 = None
@@ -196,13 +199,15 @@ class XSPECInteractivePlot:
         self.dof = None
 
     def initialize_xspec(self):
-        Xset.chatter = 0
+        Xset.chatter = self.chatter
         Xset.xsect = 'vern'
         Xset.abund = 'wilm'
         Fit.statMethod = 'cstat'
         Xset.allowPrompting = False
-        AllData.clear()
-        AllModels.clear()
+        self.AllData = AllData
+        self.AllModels = AllModels
+        self.AllData.clear()
+        self.AllModels.clear()
         pwd = os.getcwd()
         os.chdir(self.Dir)
         if self.xspec_type == 'bkg':
@@ -237,15 +242,15 @@ class XSPECInteractivePlot:
             sp_bkg.multiresponse[1].arf = self.bkg_arf
             sp_bkg.multiresponse[2] = self.bkg_rmf
         os.chdir(pwd)
-        AllData.ignore(f"**-{self.energy_range[0]},{self.energy_range[1]}-**")
+        self.AllData.ignore(f"**-{self.energy_range[0]},{self.energy_range[1]}-**")
     
     def set_model(self):
-        Xset.chatter = 1
-        Xset.logChatter = 0
+        self.initialize_xspec()
+        Xset.chatter = self.chatter
         if self.xspec_type == 'bkg':
             self.m_bkg = Model(self.model_name, "bkg", 1)
             Xset.restore(f"{self.Dir}TM8_FWC_c010_mod_customized_bkg.dat")
-            self.m_fwc = AllModels(1, "fwc")
+            self.m_fwc = self.AllModels(1, "fwc")
             for _name in self.m_fwc.componentNames:
                 if _name != "constant":
                     _comp = self.m_fwc.__getattribute__(_name)
@@ -263,7 +268,7 @@ class XSPECInteractivePlot:
             self.m_src = Model(src_model, "src", 1)
             self.m_bkg = Model(bkg_model, "bkg", 2)
             Xset.restore(f"{self.Dir}TM8_FWC_c010_mod_customized_src.dat")
-            self.m_fwc = AllModels(1, "fwc")
+            self.m_fwc = self.AllModels(1, "fwc")
             for _name in self.m_fwc.componentNames:
                 if _name != "constant":
                     _comp = self.m_fwc.__getattribute__(_name)
@@ -274,7 +279,7 @@ class XSPECInteractivePlot:
     def set_param_helper(self):
         self.initialize_xspec()
         self.set_model()
-        self.model_type, self.comp_names, self.param_names, _, self.bounds, self.logmask = get_free_parameters(AllModels, AllData)
+        self.model_type, self.comp_names, self.param_names, _, self.bounds, self.logmask = get_free_parameters(AllModels, self.AllData)
         print('Following parameters are free:')
         print('------------------------------------------------------------------------------------')
         print(f"{'No.':<8}{'Model':<15}{'Component':<20}{'Parameter':<20}{'Bounds':<30}")
@@ -298,11 +303,11 @@ class XSPECInteractivePlot:
     def extract_parameters(self):
         if not self.param_defaults:
             raise ValueError("Argumnet param_defaults is required but not provided or are empty.")
-        self.model_type, self.comp_names, self.param_names, _, self.bounds, self.logmask = get_free_parameters(AllModels, AllData)
+        self.model_type, self.comp_names, self.param_names, _, self.bounds, self.logmask = get_free_parameters(self.AllModels, self.AllData)
         self.values = [param[0] if isinstance(param, tuple) else param for param in self.param_defaults]
         
         if len(self.param_names) != len(self.values):
-            raise ValueError(f"Number of parameters ({len(self.param_names)}) does not match number of values ({len(self.values)})")
+            raise ValueError(f"Number of model parameters ({len(self.param_names)}) does not match number of input values ({len(self.values)})")
 
         free_mask = [not (isinstance(f_mask, tuple) and f_mask[1] == -1) for f_mask in self.param_defaults]
         model_comp_names = [f"{model}.{comp}" for model, comp in zip(self.model_type, self.comp_names)]
@@ -342,17 +347,16 @@ class XSPECInteractivePlot:
                 component.__getattribute__(self.param_names[i]).frozen = True
 
     def perform_fit(self):
+        Xset.chatter = self.chatter
         self.set_values(self.values)
         Fit.query = "yes"
         Fit.nIterations = 1000
         Fit.perform()
         # Xset.chatter = 0
-        self.model_type, self.comp_names, self.param_names, self.values, self.bounds, self.logmask= get_free_parameters(AllModels, AllData)
+        self.model_type, self.comp_names, self.param_names, self.values, self.bounds, self.logmask= get_free_parameters(self.AllModels, self.AllData)
         self.set_values(self.values, frozen_mask=False)
         self.C = Fit.statistic
         self.dof = Fit.dof
-        Xset.chatter = 10
-        print(AllModels.show())
         
     def plot_data(self):
         Plot.device = "/null"
@@ -421,7 +425,7 @@ class XSPECInteractivePlot:
             energy_type = 'eng_src'
         elif self.xspec_type == 'bkg':
             self.ax1.errorbar(self.plotdata["eng_bkg"], self.plotdata["bkg_data"], xerr=self.plotdata["eng_bkg_err"], yerr=self.plotdata["bkg_data_err"], fmt='.', color="black", label="bkg data", alpha=0.5, lw=1.2)
-            self.total_bkg_line, = self.ax1.plot(self.plotdata["eng_bkg"], self.total_model, label="Bkg model")
+            self.total_model_line, = self.ax1.plot(self.plotdata["eng_bkg"], self.total_model, label="Bkg model")
             energy_type = 'eng_bkg'
             self.PiB_line, = self.ax1.plot(self.plotdata["eng_bkg"], self.Pib_model, label="PIB model", linestyle="--")
 
@@ -435,7 +439,8 @@ class XSPECInteractivePlot:
         self.ax1.set_yscale("log")
         self.ax1.set_xscale("log")
         self.ax1.set_ylabel(r"$\mathrm{Counts\ s^{-1}\ keV^{-1}}$")
-        self.ax1.set_ylim(3, 2e2)
+        y_min, y_max = np.min(Plot.y(1)), np.max(Plot.y(1))
+        self.ax1.set_ylim(y_min/5, y_max*5)
         self.ax1.legend()
         self.res_points = self.ax2.errorbar(self.plotdata[energy_type], self.residuals, xerr=self.plotdata[f"{energy_type}_err"], yerr=self.residuals_err, fmt='.', color="black", label="residuals", alpha=0.5, lw=1.2)
         self.ax2.axhline(0, color='gray', linestyle='--')
@@ -454,21 +459,45 @@ class XSPECInteractivePlot:
         self.C = Fit.statistic
         self.dof = Fit.dof
         Plot('ldata delchi')
-        self.total_model = Plot.model(1)
-        self.residuals = Plot.y(1, 2)
-        self.residuals_err = Plot.yErr(1, 2)
-        if self.xspec_type == 'bkg':
+        
+        if self.xspec_type == 'src_bkg':
+            self.total_model = Plot.model(1)
+            self.total_src_model = np.zeros(len(Plot.model(1)))
+            if Plot.nAddComps(2) < Plot.nAddComps(1):
+                for i in range(1, Plot.nAddComps(1)-Plot.nAddComps(2) + 1):
+                    self.total_src_model += np.array(Plot.addComp(i, 1))
+                self.total_bkg_model =Plot.model(2)
+                self.total_src_line.set_ydata(self.total_src_model)
+
+            if Plot.nAddComps(2) == Plot.nAddComps(1):
+                self.total_bkg_model = np.zeros(len(Plot.model(1)))
+                for i in range(1, Plot.nAddComps()):
+                    self.total_bkg_model += np.array(Plot.addComp(i, 1))
+                self.total_src_model = self.total_model - self.total_bkg_model
+                self.total_bkg_model = Plot.model(2)   
+                self.component_lines.set_ydata(self.total_src_model)
+            self.total_bkg_line.set_ydata(self.total_bkg_model)
+        
+        elif self.xspec_type == 'src':
+            self.total_model = Plot.model(1)
+            
+        elif self.xspec_type == 'bkg':
+            self.total_model = Plot.model(1)
             self.Pib_model = np.zeros(len(Plot.model(1)))
             for i in range(len(self.label_list)+1, Plot.nAddComps() + 1):
                 self.Pib_model += np.array(Plot.addComp(i, 1))
             self.PiB_line.set_ydata(self.Pib_model)
-        
+
+        self.residuals = Plot.y(1, 2)
+        self.residuals_err = Plot.yErr(1, 2)
+    
         self.total_model_line.set_ydata(self.total_model)
-        for i in range(len(self.label_list)):
-            self.component_lines[i].set_ydata(Plot.addComp(i + 1, 1))
+        if not(self.xspec_type == 'src_bkg' and Plot.nAddComps(2) == Plot.nAddComps(1)):
+            for i in range(len(self.label_list)):
+                self.component_lines[i].set_ydata(Plot.addComp(i + 1, 1))
             
         self.ax1.set_title(f"CSTAT/d.o.f. = {(self.C / self.dof):.2f} ({self.C:.2f}/{self.dof})")
-        update_errorbar(self.res_points, self.eng_bkg, self.residuals, xerr=self.eng_bkg_err, yerr=self.residuals_err)
+        update_errorbar(self.res_points, Plot.x(1, 2), self.residuals, xerr=Plot.xErr(1, 2), yerr=self.residuals_err)
         self.fig.canvas.draw_idle()
 
     def create_sliders(self):
@@ -481,13 +510,14 @@ class XSPECInteractivePlot:
                 continuous_update=True,
                 description=f'{comp}.{param}:',  # Add a colon for better spacing
                 style={'description_width': '150px'},  # Adjust description width for more space
-                readout_format='.2f',
+                readout_format='.2e' if abs(val) < 1e-2 or abs(val) > 100 else '.2f',  # Use scientific notation for small/large numbers
                 layout=widgets.Layout(width='400px')  # Make sliders bigger
             )
             for comp, param, val in zip(self.comp_names, self.param_names, self.values)
         ]
 
     def create_interactive_layout(self):
+        self.create_sliders()
         def proxy_function(**kwargs):
             ordered_values = [kwargs[k] for k in sorted(kwargs.keys())]
             return self.update_model(ordered_values)
@@ -506,11 +536,18 @@ class XSPECInteractivePlot:
         display(layout)
 
     def run(self):
-        self.initialize_xspec()
+        # self.initialize_xspec()
         self.set_model()
         self.extract_parameters()
         self.perform_fit()
         self.plot_data()
         self.create_plot()
-        self.create_sliders()
+        # self.create_sliders()
+        self.create_interactive_layout()
+    
+    def run_with_updated_model(self):
+        self.extract_parameters()
+        self.perform_fit()
+        self.plot_data()
+        self.create_plot()
         self.create_interactive_layout()
