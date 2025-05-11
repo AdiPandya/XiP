@@ -32,7 +32,7 @@ This project is licensed under the MIT License. See the LICENSE file for details
 ## Author's Note
 This tool was built because I found it difficult to visualize the effects of different XSPEC models and their parameters. 
 
-I hope you find it useful for your spectral analysis needs. If you have any suggestions for improvements or new features, please feel free to reach out at my [email](aditya.pandya@astro.uni-tuebingen.de).
+I hope you find it useful for your spectral analysis needs. If you have any suggestions for improvements or new features, please feel free to reach out at my email id: aditya.pandya@astro.uni-tuebingen.de.
 
 #### Disclaimer 
 This tool is a work in progress and may have bugs or limitations. Please report any issues you encounter, and feel free to suggest improvements or new features.
