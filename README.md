@@ -26,9 +26,6 @@ Follow the instructions in the [XiP_demo.ipynb](XiP_demo.ipynb) notebook to conf
 ## Contributing
 Contributions are welcome! Please submit a pull request or open an issue for any bugs or feature requests.
 
-## License
-This project is licensed under the MIT License. See the LICENSE file for details.
-
 ## Author's Note
 This tool was built because I found it difficult to visualize the effects of different XSPEC models and their parameters. 
 
