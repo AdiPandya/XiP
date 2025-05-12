@@ -126,7 +126,6 @@ class XSPECInteractivePlot:
     
     def set_model(self):
         self.initialize_xspec()
-        Xset.chatter = self.chatter
         if self.xspec_type == 'bkg':
             self.m_bkg = Model(self.model_name, "bkg", 1)
             Xset.restore(f"{self.Dir}TM8_FWC_c010_mod_customized_bkg.dat")
@@ -310,10 +309,10 @@ class XSPECInteractivePlot:
             self.total_model_line, = self.ax1.plot(self.plotdata["eng_bkg"], self.total_model, label="Bkg model", lw=1.8)
             energy_type = 'eng_bkg'
             self.PiB_line, = self.ax1.plot(self.plotdata["eng_bkg"], self.Pib_model, label="PIB model", linestyle=":")
-
+            
         if self.xspec_type == 'src_bkg' and Plot.nAddComps(2) == Plot.nAddComps(1):
             self.component_lines, = self.ax1.plot(self.plotdata[energy_type], self.total_src_model, label=self.label_list[0], linestyle="--")
-        if self.xspec_type == 'src' and Plot.nAddComps() == 0:
+        elif self.xspec_type == 'src' and Plot.nAddComps() == 0:
             self.component_lines, = self.ax1.plot(self.plotdata[energy_type], self.total_model, label=self.label_list[0], linestyle="--", lw=1)
         else:
             for i in range(len(self.label_list)):
@@ -339,7 +338,7 @@ class XSPECInteractivePlot:
         self.ax1.set_title(f"CSTAT/d.o.f. = {(self.C / self.dof):.2f} ({self.C:.2f}/{self.dof})")
 
     def update_model(self, new_values):
-        self.set_values(new_values)
+        self.set_values(new_values, frozen_mask=False)
         self.C = Fit.statistic
         self.dof = Fit.dof
         Plot('ldata delchi')
@@ -392,6 +391,8 @@ class XSPECInteractivePlot:
             FloatSlider(
                 min=max(bounds[0], val - abs(val*3)),
                 max=min(bounds[1], val + abs(val*3)),
+                # min=bounds[0],
+                # max=bounds[1],
                 value=val,
                 step=val / 10,
                 continuous_update=True,
@@ -409,10 +410,9 @@ class XSPECInteractivePlot:
             ordered_values = [kwargs[k] for k in sorted(kwargs.keys())]
             return self.update_model(ordered_values)
 
-        controls = {f'v{i}': slider for i, slider in enumerate(self.sliders)}
+        controls = {f'v{i:02}': slider for i, slider in enumerate(self.sliders[:99])}
         output = interactive_output(proxy_function, controls)
         reset_button = widgets.Button(description="Reset", button_style="info")
-
         def reset_parameters(_):
             for slider, default_value in zip(self.sliders, self.values):
                 slider.value = default_value
