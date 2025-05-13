@@ -21,7 +21,8 @@ pip install -r requirements.txt
 ## Usage
 
 Follow the instructions in the [XiP_demo.ipynb](XiP_demo.ipynb) notebook to configure data and models and plot the spectrum. The notebook provides a step-by-step guide on how to set up the data directory, source and background files, and model parameters.
-> **Warning**: The `XiP_demo.ipynb` notebook is a work in progress but the python script `XiP.py` is fully functional. The notebook will be updated with more examples and features in the future.
+
+You can also find a detailed explanation of the internal parameters and their usage on the [XiP GitHub Wiki](https://github.com/adipandya/XiP/wiki).
 
 ## Contributing
 Contributions are welcome! Please submit a pull request or open an issue for any bugs or feature requests.
