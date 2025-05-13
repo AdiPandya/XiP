@@ -21,6 +21,7 @@ class XSPECInteractivePlot:
         self.src_arf = data_config.get('src_arf')
         self.bkg_rmf = data_config.get('bkg_rmf')
         self.bkg_arf = data_config.get('bkg_arf')
+        self.fwc_data = data_config.get('fwc_data')
 
         # Model configuration
         self.model_name = model_config.get('model_name')
@@ -30,11 +31,16 @@ class XSPECInteractivePlot:
         # Other settings
         self.xspec_type = xspec_type
         self.energy_range = energy_range
+        self.chatter = 0
+        self.perform_fit = True
+        self.show_bkg_data = True
+        self.minSig = 20
+        self.maxBins = 100
 
         # Internal attributes
         self.AllData = None
         self.AllModels = None
-        self.chatter = 0
+        
         self.fig = None
         self.ax1 = None
         self.ax2 = None
@@ -46,7 +52,6 @@ class XSPECInteractivePlot:
         self.total_bkg_line = None
         self.res_points = None
         self.values = None
-        self.perform_fit = True
         self.model_type = None
         self.comp_names = None
         self.param_names = None
@@ -70,7 +75,6 @@ class XSPECInteractivePlot:
         }
         self.residuals = None
         self.residuals_err = None
-        self.show_bkg_data = True
         self.Pib_model = None
         self.total_model = None
         self.total_src_model = None
@@ -128,14 +132,18 @@ class XSPECInteractivePlot:
         self.initialize_xspec()
         if self.xspec_type == 'bkg':
             self.m_bkg = Model(self.model_name, "bkg", 1)
-            Xset.restore(f"{self.Dir}TM8_FWC_c010_mod_customized_bkg.dat")
-            self.m_fwc = self.AllModels(1, "fwc")
-            for _name in self.m_fwc.componentNames:
-                if _name != "constant":
-                    _comp = self.m_fwc.__getattribute__(_name)
-                    for _pname in _comp.parameterNames:
-                        _par = _comp.__getattribute__(_pname)
-                        _par.frozen = True
+            try:
+                Xset.restore(f"{self.Dir}/{self.fwc_data}")
+                self.m_fwc = self.AllModels(1, "fwc")
+                for _name in self.m_fwc.componentNames:
+                    if _name != "constant":
+                        _comp = self.m_fwc.__getattribute__(_name)
+                        for _pname in _comp.parameterNames:
+                            _par = _comp.__getattribute__(_pname)
+                            _par.frozen = True
+            except:
+                print("No FWC model found, proceeding without it.")
+                pass
 
         elif self.xspec_type == 'src':
             self.m_src = Model(self.model_name, "src", 1)
@@ -146,14 +154,18 @@ class XSPECInteractivePlot:
             src_model, bkg_model = self.model_name.split('|', 1)
             self.m_src = Model(src_model, "src", 1)
             self.m_bkg = Model(bkg_model, "bkg", 2)
-            Xset.restore(f"{self.Dir}TM8_FWC_c010_mod_customized_src.dat")
-            self.m_fwc = self.AllModels(1, "fwc")
-            for _name in self.m_fwc.componentNames:
-                if _name != "constant":
-                    _comp = self.m_fwc.__getattribute__(_name)
-                    for _pname in _comp.parameterNames:
-                        _par = _comp.__getattribute__(_pname)
-                        _par.frozen = True
+            try:
+                Xset.restore(f"{self.Dir}/{self.fwc_data}")
+                self.m_fwc = self.AllModels(1, "fwc")
+                for _name in self.m_fwc.componentNames:
+                    if _name != "constant":
+                        _comp = self.m_fwc.__getattribute__(_name)
+                        for _pname in _comp.parameterNames:
+                            _par = _comp.__getattribute__(_pname)
+                            _par.frozen = True
+            except:
+                print("No FWC model found, proceeding without it.")
+                pass
         
     def set_param_helper(self):
         self.initialize_xspec()
@@ -241,7 +253,7 @@ class XSPECInteractivePlot:
         Plot.device = "/null"
         Plot.add = True
         Plot.xAxis = "keV"
-        Plot.setRebin(minSig=20, maxBins=100)
+        Plot.setRebin(minSig=self.minSig, maxBins=self.maxBins)
         Plot('ldata delchi')
         if self.xspec_type == 'src_bkg':
             self.plotdata["eng_src"] = Plot.x(1)
