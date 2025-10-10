@@ -16,7 +16,7 @@ Install all dependencies using the `requirements.txt` file:
 ```bash
 pip install -r requirements.txt
 ```
-> **Note**: Ensure XSPEC is installed and properly configured on your system.
+> **Note**: Ensure XSPEC 12.13.1 (PyXspec 2.1.2) or above is installed and properly configured on your system.
 
 ## Usage
 
