@@ -1,0 +1,7 @@
+# Tests
+tests/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
