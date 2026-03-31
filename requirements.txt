@@ -1,3 +1,8 @@
-numpy
-matplotlib
-ipywidgets
+# XiP GUI — runtime dependencies
+PyQt6>=6.4
+numpy>=1.24
+matplotlib>=3.7
+
+# XSPEC Python interface — provided by HEASoft (not pip-installable).
+# Install HEASoft >= 6.31 and source its initialisation script before
+# running XiP.  See https://heasarc.gsfc.nasa.gov/lheasoft/install.html

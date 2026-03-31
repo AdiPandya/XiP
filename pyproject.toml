@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xip"
+version = "2.0.0"
+description = "X-ray Interactive Plotter — GUI and CLI for XSPEC spectral models"
+requires-python = ">=3.10"
+dependencies = [
+    "PyQt6>=6.4",
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+]
+
+[project.scripts]
+xip-gui  = "XiP_GUI:main"
+xip-plot = "xip.backend:main"
+
+[tool.setuptools]
+py-modules = ["XiP_GUI"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["xip*"]
+
+[tool.setuptools.package-data]
+"xip" = ["xspec_model_db.json"]
