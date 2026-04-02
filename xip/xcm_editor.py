@@ -110,6 +110,11 @@ class ParsedModel:
     model_line: str
     components: list[ParsedComponent] = field(default_factory=list)
     pre_lines: list[str] = field(default_factory=list)
+    # When a model applies to multiple data groups the param block repeats once
+    # per group (XSPEC convention).  data_groups holds per-group component lists;
+    # components is always data_groups[0] for backward compatibility.  Empty
+    # when the model has a single data group.
+    data_groups: list[list[ParsedComponent]] = field(default_factory=list)
 
 
 @dataclass
@@ -118,6 +123,8 @@ class ParsedXCM:
     models: list[ParsedModel] = field(default_factory=list)
     # Each entry: {"type": "data"|"bkg", "group": int, "source_num": int, "filename": str}
     spectra_info: list[dict] = field(default_factory=list)
+    # Lines that appear after the last model block (e.g. "bayes off")
+    trailer_lines: list[str] = field(default_factory=list)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -177,6 +184,10 @@ def parse_expression_components(expression: str) -> list[str]:
 
 _MODEL_LINE_RE = re.compile(
     r"^\s*model\s+(\d+):(\w+)\s+(.+?)\s*$", re.IGNORECASE
+)
+# Anonymous model line: "model  expression" (no N:name prefix) 
+_ANON_MODEL_LINE_RE = re.compile(
+    r"^\s*model\s+(?!\d+:)(.+?)\s*$", re.IGNORECASE
 )
 _FLOAT_RE = re.compile(r"^[+-]?\d*\.?\d+(?:[eE][+-]?\d+)?$")
 # Patterns for extracting data file references from the XCM header
@@ -252,6 +263,41 @@ def _assign_param_names(
     return result
 
 
+def _compute_per_group_param_count(
+    comp_names: list[str], n_total: int, n_groups: int
+) -> int | None:
+    """Return the expected number of params per data group, or ``None``.
+
+    When XSPEC applies one model to *n_groups* data groups the param block
+    in the XCM file contains ``n_groups × n_per_group`` lines (numeric or
+    linked).  This function detects that pattern.
+
+    Returns ``None`` when the split is ambiguous (e.g. only one group, or
+    the total count does not divide evenly, or the known param count for
+    the expression already uses all params).
+    """
+    if n_groups <= 1 or n_total == 0:
+        return None
+    known_per_comp = [
+        len(_get_param_names(n))
+        for n in comp_names
+        if _get_param_names(n) is not None
+    ]
+    n_known = sum(known_per_comp)
+    has_unknown = any(_get_param_names(n) is None for n in comp_names)
+
+    if not has_unknown:
+        # All components in the DB — exact divisibility check.
+        return n_known if n_total == n_known * n_groups else None
+    else:
+        # Some components unknown — require clean divisibility and that the
+        # known portion fits within one group.
+        if n_total % n_groups != 0:
+            return None
+        candidate = n_total // n_groups
+        return candidate if candidate >= n_known else None
+
+
 def _parse_spectra_info(parsed: ParsedXCM, header_lines: list[str]) -> None:
     """Extract data and backgrnd file references from XCM header lines.
 
@@ -301,12 +347,28 @@ def _parse_spectra_info(parsed: ParsedXCM, header_lines: list[str]) -> None:
                     i += 1
 
 
+def _match_model_line(line: str):
+    """Try both named and anonymous model-line regexes.
+
+    Returns a tuple ``(source_num, model_name, expression)`` on match,
+    or ``None`` if the line is not a model line.
+    """
+    m = _MODEL_LINE_RE.match(line)
+    if m:
+        return int(m.group(1)), m.group(2), m.group(3).strip()
+    m = _ANON_MODEL_LINE_RE.match(line)
+    if m:
+        # Assign synthetic defaults that mirror XSPEC's unnamed model 1.
+        return 1, "src", m.group(1).strip()
+    return None
+
+
 def parse_xcm_text(text: str) -> ParsedXCM:
     """Parse raw XCM text into a ParsedXCM structure."""
     lines = text.splitlines()
     parsed = ParsedXCM()
 
-    model_indices = [i for i, l in enumerate(lines) if _MODEL_LINE_RE.match(l)]
+    model_indices = [i for i, l in enumerate(lines) if _match_model_line(l) is not None]
     if not model_indices:
         parsed.header_lines = lines
         _parse_spectra_info(parsed, lines)
@@ -316,29 +378,65 @@ def parse_xcm_text(text: str) -> ParsedXCM:
     _parse_spectra_info(parsed, parsed.header_lines)
 
     for blk, start in enumerate(model_indices):
-        end = model_indices[blk + 1] if blk + 1 < len(model_indices) else len(lines)
-        m = _MODEL_LINE_RE.match(lines[start])
-        src_num = int(m.group(1))
-        mod_name = m.group(2)
-        expression = m.group(3).strip()
+        is_last = (blk + 1 == len(model_indices))
+        end = model_indices[blk + 1] if not is_last else len(lines)
+        src_num, mod_name, expression = _match_model_line(lines[start])
 
         raw_params: list[ParsedParam] = []
         pre_lines: list[str] = []
+        trailing: list[str] = []  # non-param lines after last param in this block
 
+        seen_last_param = False
         for line in lines[start + 1: end]:
             stripped = line.strip()
             if _is_param_line(line):
+                # Any accumulated trailing lines before a new param line belong
+                # to a nested block gap — treat as pre_lines for next iteration.
+                trailing.clear()
+                seen_last_param = True
                 raw_params.append(_parse_param_values(line))
             elif stripped.startswith("="):
+                trailing.clear()
+                seen_last_param = True
                 raw_params.append(ParsedParam(name="", is_linked=True,
                                               link_str=stripped))
             elif not stripped:
-                pass  # skip blanks inside block
-            # Non-param, non-blank lines (shouldn't appear inside a model block
-            # normally, but keep them as pre_lines for the next model)
+                pass  # skip blank lines inside block
+            else:
+                # Non-param, non-blank: if we've seen params already this is a
+                # post-param directive (e.g. "bayes off"); otherwise it's a
+                # between-block comment / directive — collect as trailing.
+                trailing.append(line)
+
+        # Trailing non-param lines at the end of the last model block are
+        # post-model directives ("bayes off", etc.) — save them.
+        if is_last and trailing:
+            parsed.trailer_lines = trailing
 
         comp_names = parse_expression_components(expression)
-        components = _assign_param_names(comp_names, raw_params)
+
+        # ── Multi-group detection ──────────────────────────────────────────
+        # When the same model applies to N data groups the XCM param block
+        # contains N × per_group lines (numeric or linked).  Detect this and
+        # split the flat list into per-group components.
+        n_data_groups = len({
+            e["group"] for e in parsed.spectra_info if e["type"] == "data"
+        }) or 1
+        n_per_group = _compute_per_group_param_count(
+            comp_names, len(raw_params), n_data_groups
+        )
+
+        if n_per_group is not None and n_data_groups > 1:
+            # Split raw params into one chunk per data group and assign names
+            # independently for each chunk.
+            data_groups: list[list[ParsedComponent]] = []
+            for g in range(n_data_groups):
+                chunk = raw_params[g * n_per_group: (g + 1) * n_per_group]
+                data_groups.append(_assign_param_names(comp_names, chunk))
+            components = data_groups[0]
+        else:
+            components = _assign_param_names(comp_names, raw_params)
+            data_groups = []
 
         parsed.models.append(ParsedModel(
             source_num=src_num,
@@ -347,6 +445,7 @@ def parse_xcm_text(text: str) -> ParsedXCM:
             model_line=lines[start],
             components=components,
             pre_lines=pre_lines,
+            data_groups=data_groups,
         ))
 
     return parsed
@@ -358,9 +457,14 @@ def serialize_xcm(parsed: ParsedXCM) -> str:
     for model in parsed.models:
         out.extend(model.pre_lines)
         out.append(model.model_line)
-        for comp in model.components:
-            for p in comp.params:
-                out.append(p.fmt())
+        # Emit each data group's params in order; fall back to single-group.
+        groups = model.data_groups if model.data_groups else [model.components]
+        for group in groups:
+            for comp in group:
+                for p in comp.params:
+                    out.append(p.fmt())
+    if parsed.trailer_lines:
+        out.extend(parsed.trailer_lines)
     return "\n".join(out)
 
 
@@ -568,27 +672,59 @@ class _ModelWidget(QGroupBox):
         self._lay.addWidget(sep)
 
         self.comp_widgets: list[_ComponentWidget] = []
+        # Parallel structure to comp_widgets: one inner list per data group.
+        self._group_comp_widgets: list[list[_ComponentWidget]] = []
         self._build_comp_widgets()
 
     # ------------------------------------------------------------------
     def _build_comp_widgets(self) -> None:
         """Clear and recreate _ComponentWidget children from self._model."""
-        for cw in self.comp_widgets:
-            cw.setParent(None)
+        for cws in self._group_comp_widgets:
+            for cw in cws:
+                cw.setParent(None)
+        self._group_comp_widgets.clear()
         self.comp_widgets.clear()
-        for comp in self._model.components:
-            cw = _ComponentWidget(comp, self)
-            self.comp_widgets.append(cw)
-            self._lay.addWidget(cw)
+
+        groups = self._model.data_groups if len(self._model.data_groups) > 1 else [self._model.components]
+
+        for g_idx, group_comps in enumerate(groups):
+            if len(groups) > 1:
+                # Wrap each data group in a labelled QGroupBox.
+                grp_box = QGroupBox(f"Data Group {g_idx + 1}")
+                grp_f = QFont()
+                grp_f.setItalic(True)
+                grp_box.setFont(grp_f)
+                grp_lay = QVBoxLayout(grp_box)
+                grp_lay.setContentsMargins(4, 8, 4, 6)
+                grp_lay.setSpacing(4)
+                parent_widget = grp_box
+                add_to = grp_lay
+            else:
+                grp_box = None
+                parent_widget = self
+                add_to = self._lay
+
+            group_cws: list[_ComponentWidget] = []
+            for comp in group_comps:
+                cw = _ComponentWidget(comp, parent_widget)
+                group_cws.append(cw)
+                add_to.addWidget(cw)
+
+            self._group_comp_widgets.append(group_cws)
+            self.comp_widgets.extend(group_cws)
+            if grp_box is not None:
+                self._lay.addWidget(grp_box)
 
     # ------------------------------------------------------------------
     def _flush_values_to_model(self) -> None:
         """Write current widget values back to self._model before any rebuild."""
-        for cw, comp in zip(self.comp_widgets, self._model.components):
-            for rw, param in zip(cw.row_widgets, comp.params):
-                updated = rw.get_param()
-                param.value = updated.value
-                param.delta = updated.delta
+        groups = self._model.data_groups if len(self._model.data_groups) > 1 else [self._model.components]
+        for group_cws, group_comps in zip(self._group_comp_widgets, groups):
+            for cw, comp in zip(group_cws, group_comps):
+                for rw, param in zip(cw.row_widgets, comp.params):
+                    updated = rw.get_param()
+                    param.value = updated.value
+                    param.delta = updated.delta
 
     # ------------------------------------------------------------------
     def _apply_expression(self) -> None:
@@ -667,13 +803,75 @@ class _ModelWidget(QGroupBox):
 
         # Commit changes to the data model
         self._model.expression = new_expr
-        self._model.model_line = re.sub(
+
+        # Update the raw model line — handle both named ("model N:name expr")
+        # and anonymous ("model  expr") formats.
+        new_line = re.sub(
             r"(model\s+\d+:\w+\s+).+$",
             lambda m, e=new_expr: m.group(1) + e,
             self._model.model_line,
             flags=re.IGNORECASE,
         )
-        self._model.components = new_components
+        if new_line == self._model.model_line:
+            # Anonymous format: "model  expression"
+            new_line = re.sub(
+                r"(?i)(^\s*model\s+)(?!\d+:).+$",
+                lambda m, e=new_expr: m.group(1) + e,
+                self._model.model_line,
+            )
+        self._model.model_line = new_line
+
+        if len(self._model.data_groups) > 1:
+            # Multi-group model: rebuild each group from the new expression.
+            # Group 1 uses new_components (values already carried over above).
+            # Groups 2+: replicate the component structure but preserve each
+            # param's linked/independent status by matching flat param position.
+            # Linked params get a recomputed "= p{N}" pointing to group-1 param N.
+            new_data_groups: list[list[ParsedComponent]] = [new_components]
+            for g_idx in range(1, len(self._model.data_groups)):
+                old_group = self._model.data_groups[g_idx]
+                old_flat = [p for comp in old_group for p in comp.params]
+                extra_group: list[ParsedComponent] = []
+                flat_pos = 0  # absolute 0-based index within the group
+                for comp_tmpl in new_components:
+                    extra_params: list[ParsedParam] = []
+                    for p_tmpl in comp_tmpl.params:
+                        if flat_pos < len(old_flat):
+                            old_p = old_flat[flat_pos]
+                            if old_p.is_linked:
+                                # Recompute link string to match new group-1
+                                # absolute param number (1-based).
+                                extra_params.append(ParsedParam(
+                                    name=p_tmpl.name,
+                                    value=p_tmpl.value, delta=p_tmpl.delta,
+                                    hard_min=p_tmpl.hard_min, soft_min=p_tmpl.soft_min,
+                                    soft_max=p_tmpl.soft_max, hard_max=p_tmpl.hard_max,
+                                    is_linked=True,
+                                    link_str=f"= p{flat_pos + 1}",
+                                ))
+                            else:
+                                # Independent param: keep old value.
+                                extra_params.append(ParsedParam(
+                                    name=p_tmpl.name,
+                                    value=old_p.value, delta=old_p.delta,
+                                    hard_min=p_tmpl.hard_min, soft_min=p_tmpl.soft_min,
+                                    soft_max=p_tmpl.soft_max, hard_max=p_tmpl.hard_max,
+                                    is_linked=False, link_str="",
+                                ))
+                        else:
+                            extra_params.append(_default_param(p_tmpl.name))
+                        flat_pos += 1
+                    extra_group.append(ParsedComponent(
+                        name=comp_tmpl.name,
+                        display_name=comp_tmpl.display_name,
+                        params=extra_params,
+                    ))
+                new_data_groups.append(extra_group)
+            self._model.data_groups = new_data_groups
+            self._model.components = new_data_groups[0]
+        else:
+            self._model.components = new_components
+            self._model.data_groups = []
 
         # Update group-box title
         self.setTitle(
