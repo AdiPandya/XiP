@@ -93,19 +93,54 @@ def render_xspec_plot(
     for other in spectra.get("others", []):
         spec_lookup[other["id"]] = other
 
+    # Ask the profile which source spec_ids are visible and what colors/labels
+    # to use.  Both default to "show all with default style" for non-NuSTAR profiles.
+    _vis_ids = profile.visible_source_spec_ids(modes, spec_lookup) if profile else None
+    _src_info = profile.source_spec_info(spec_lookup) if profile else {}
+
+    def _src_visible(spec_id: int) -> bool:
+        return _vis_ids is None or spec_id in _vis_ids
+
+    def _src_color(spec_id: int) -> str:
+        return _src_info.get(spec_id, {}).get("color", KIND_STYLES["source"]["color"])
+
+    def _src_data_label(spec_id: int, fallback: str) -> str:
+        return _src_info.get(spec_id, {}).get("label", fallback)
+
+    def _src_model_label(spec_id: int, fallback: str) -> str:
+        info = _src_info.get(spec_id)
+        return (info["label"] + " model") if info else fallback
+
     # ── Data points ──────────────────────────────────────────────────────────
     plotted_y = []
     if 1 in modes or 2 in modes:
         sp = spectra.get("source")
-        if sp is not None and sp["y"].size > 0:
-            style = KIND_STYLES["source"]
+        if sp is not None and sp["y"].size > 0 and _src_visible(sp["id"]):
             ax1.errorbar(
                 sp["x"], sp["y"],
                 xerr=sp["xerr"], yerr=sp["yerr"],
-                fmt=".", color=style["color"],
-                label=style["label"], alpha=0.6, lw=1.2,
+                fmt=".", color=_src_color(sp["id"]),
+                label=_src_data_label(sp["id"], KIND_STYLES["source"]["label"]),
+                alpha=0.6, lw=1.2,
             )
             plotted_y.append(sp["y"])
+
+        # Additional source-kind spectra (e.g. NuSTAR FPMB) sit in "others".
+        extra_src_counter = 2
+        for other_sp in spectra.get("others", []):
+            if other_sp.get("kind") != "source" or other_sp["y"].size == 0:
+                continue
+            if not _src_visible(other_sp["id"]):
+                continue
+            ax1.errorbar(
+                other_sp["x"], other_sp["y"],
+                xerr=other_sp["xerr"], yerr=other_sp["yerr"],
+                fmt=".", color=_src_color(other_sp["id"]),
+                label=_src_data_label(other_sp["id"], f"Source data ({extra_src_counter})"),
+                alpha=0.6, lw=1.2,
+            )
+            plotted_y.append(other_sp["y"])
+            extra_src_counter += 1
 
     if 3 in modes:
         sp = spectra.get("bkg")
@@ -134,13 +169,27 @@ def render_xspec_plot(
     source_modes = profile_mode_nums - {3}  # everything except the bkg-only mode
     if modes & source_modes:
         src_sp = spectra.get("source")
-        if src_sp is not None:
-            style = KIND_STYLES["source"]
+        if src_sp is not None and _src_visible(src_sp["id"]):
             ax1.plot(
                 src_sp["x"], src_sp["model"],
-                color=style["color"], linestyle=style["linestyle"],
-                lw=1.8, label="Source model",
+                color=_src_color(src_sp["id"]),
+                linestyle=KIND_STYLES["source"]["linestyle"],
+                lw=1.8, label=_src_model_label(src_sp["id"], "Source model"),
             )
+        # Model curves for extra source-kind spectra (e.g. NuSTAR FPMB)
+        extra_model_counter = 2
+        for other_sp in spectra.get("others", []):
+            if other_sp.get("kind") != "source":
+                continue
+            if not _src_visible(other_sp["id"]):
+                continue
+            ax1.plot(
+                other_sp["x"], other_sp["model"],
+                color=_src_color(other_sp["id"]),
+                linestyle=KIND_STYLES["source"]["linestyle"],
+                lw=1.8, label=_src_model_label(other_sp["id"], f"Source model ({extra_model_counter})"),
+            )
+            extra_model_counter += 1
 
     if 3 in modes:
         bkg_sp = spectra.get("bkg")
@@ -179,26 +228,41 @@ def render_xspec_plot(
     ax1.set_title(title)
 
     # ── Residuals panel ───────────────────────────────────────────────────────
-    # Choose which spectrum's residuals to show based on active modes.
-    resid: dict | None = None
-    if 3 in modes and 1 not in modes and 2 not in modes:
-        # Background-only view: show bkg spectrum residuals
-        bkg_sp = spectra.get("bkg")
-        if bkg_sp is not None:
-            resid = residuals_by_spec.get(bkg_sp["id"])
-    if resid is None:
-        # Default: show source (first) spectrum residuals
-        src_sp = spectra.get("source")
-        if src_sp is not None:
-            resid = residuals_by_spec.get(src_sp["id"])
-    if resid is None and residuals_by_spec:
-        resid = next(iter(residuals_by_spec.values()))
+    # Ask the profile which spec_ids should contribute residuals.
+    # None means "use the standard single-spectrum fallback".
+    _resid_ids = profile.visible_residual_spec_ids(modes, spec_lookup) if profile else None
 
-    if resid is not None and resid["x"].size:
+    resid_entries: list[tuple[dict, str]] = []  # (resid_dict, color)
+
+    if _resid_ids is not None:
+        # Profile-driven: draw residuals for every requested spec_id.
+        for spec_id in sorted(_resid_ids):
+            r = residuals_by_spec.get(spec_id)
+            if r is None or r["x"].size == 0:
+                continue
+            color = _src_color(spec_id)
+            resid_entries.append((r, color))
+    else:
+        # Default fallback: one residual series chosen by visibility.
+        resid: dict | None = None
+        if 3 in modes and 1 not in modes and 2 not in modes:
+            bkg_sp = spectra.get("bkg")
+            if bkg_sp is not None:
+                resid = residuals_by_spec.get(bkg_sp["id"])
+        if resid is None:
+            src_sp = spectra.get("source")
+            if src_sp is not None:
+                resid = residuals_by_spec.get(src_sp["id"])
+        if resid is None and residuals_by_spec:
+            resid = next(iter(residuals_by_spec.values()))
+        if resid is not None and resid["x"].size:
+            resid_entries.append((resid, "black"))
+
+    for resid, resid_color in resid_entries:
         ax2.errorbar(
             resid["x"], resid["y"],
             xerr=resid["xerr"], yerr=resid["yerr"],
-            fmt=".", color="black", alpha=0.6, lw=1.2,
+            fmt=".", color=resid_color, alpha=0.6, lw=1.2,
         )
 
     ax2.axhline(0, color="gray", linestyle="--", lw=1.0)
@@ -226,15 +290,14 @@ def render_xspec_plot(
     ax2.set_xticks(_ticks)
     ax2.set_xticklabels([str(t) for t in _ticks])
     # ── Residuals y-axis: auto-scale to actual data range, symmetric ────────
-    if resid is not None and resid["y"].size:
-        rvals = resid["y"][np.isfinite(resid["y"])]
-        if rvals.size:
-            rmin, rmax = float(np.min(rvals)), float(np.max(rvals))
-            spread = max(abs(rmin), abs(rmax))
-            pad = spread * 0.3 or 1.0
-            ylim = min(spread + pad, 10.0)
-        else:
-            ylim = 5.0
+    all_resid_y = np.concatenate(
+        [r["y"] for r, _ in resid_entries if r["y"].size > 0]
+    ) if resid_entries else np.array([])
+    rvals = all_resid_y[np.isfinite(all_resid_y)] if all_resid_y.size else np.array([])
+    if rvals.size:
+        spread = max(abs(float(np.min(rvals))), abs(float(np.max(rvals))))
+        pad = spread * 0.3 or 1.0
+        ylim = min(spread + pad, 10.0)
     else:
         ylim = 5.0
     # Symmetric axis keeps the zero line centred; tick at ±⌊0.65 * ylim⌋

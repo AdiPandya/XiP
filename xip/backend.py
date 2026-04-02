@@ -137,6 +137,8 @@ class XCMDataPlotter:
             "src", "source", "signal",
             # NuSTAR
             "sr",
+            # NuSTAR FPMA/FPMB (rebinned / grouped files like fpma_optmin20.pha)
+            "fpma", "fpmb",
             # Chandra / XMM
             "obj", "target",
             # Grouped source
@@ -314,9 +316,12 @@ class XCMDataPlotter:
                 # "components": components,
             }
 
-            if kind in ("source", "bkg"):
+            if kind in ("source", "bkg") and spectra[kind] is None:
+                # First spectrum of this kind occupies the primary slot.
                 spectra[kind] = entry
             else:
+                # Additional source/bkg spectra (e.g. FPMB) go into 'others'
+                # with their original kind preserved so profiles can find them.
                 spectra["others"].append(entry)
             total_components = Plot.nAddComps(spec_id)
             

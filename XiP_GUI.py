@@ -17,6 +17,18 @@ matplotlib.use("QtAgg")
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
+
+
+class _HighDpiToolbar(NavigationToolbar):
+    """Navigation toolbar that saves figures at 300 dpi."""
+
+    def save_figure(self, *args):
+        orig_dpi = self.canvas.figure.dpi
+        try:
+            self.canvas.figure.set_dpi(300)
+            super().save_figure(*args)
+        finally:
+            self.canvas.figure.set_dpi(orig_dpi)
 from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 
@@ -675,7 +687,7 @@ class MainWindow(QMainWindow):
         plot_outer.setSpacing(0)
 
         self.canvas = XSpecCanvas()
-        self.toolbar = NavigationToolbar(self.canvas, self)
+        self.toolbar = _HighDpiToolbar(self.canvas, self)
         plot_outer.addWidget(self.toolbar)
 
         # Vertical splitter: canvas on top, parameter sliders on bottom

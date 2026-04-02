@@ -72,6 +72,39 @@ class XiPProfile(ABC):
         """
         return False
 
+    def visible_source_spec_ids(
+        self, modes: set[int], spec_lookup: dict[int, dict]
+    ) -> "set[int] | None":
+        """Return which source-kind spec_ids should have data + model drawn.
+
+        Return ``None`` (default) to draw **all** source-kind spectra whenever
+        any source mode is active.  Override to map specific mode numbers to
+        specific detectors.
+        """
+        return None
+
+    def visible_residual_spec_ids(
+        self, modes: set[int], spec_lookup: dict[int, dict]
+    ) -> "set[int] | None":
+        """Return which spec_ids should have residuals drawn.
+
+        Return ``None`` (default) to use the standard single-spectrum fallback
+        in the plotting layer.  Override to show residuals for multiple spectra
+        simultaneously (e.g. both NuSTAR detectors).
+        """
+        return None
+
+    def source_spec_info(
+        self, spec_lookup: dict[int, dict]
+    ) -> "dict[int, dict]":
+        """Per-spec_id color and label overrides for source-kind spectra.
+
+        Returns a dict mapping ``spec_id`` → ``{"color": str, "label": str}``.
+        Any spec_id absent from the result falls back to ``KIND_STYLES["source"]``
+        defaults.  Return an empty dict (default) to use the defaults for all.
+        """
+        return {}
+
     # ------------------------------------------------------------------
     # Rendering
     # ------------------------------------------------------------------
